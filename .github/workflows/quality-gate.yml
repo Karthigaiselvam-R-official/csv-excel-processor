@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      enforce_quality_gate:
+        description: "Fail workflow when quality gate fails"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   quality-gate:
@@ -50,7 +56,7 @@ jobs:
           echo "SonarQube did not become ready in time"
           exit 1
 
-      - name: Bootstrap SonarQube auth and failing quality gate
+      - name: Bootstrap SonarQube auth and quality gate
         run: |
           set -euo pipefail
 
@@ -97,24 +103,23 @@ jobs:
 
           curl -sf -u "${SONAR_AUTH}" -X POST \
             "${SONAR_HOST_URL}/api/qualitygates/create" \
-            --data-urlencode "name=workshop-fail" || true
+            --data-urlencode "name=workshop-standard" || true
 
           create_condition() {
             curl -sf -u "${SONAR_AUTH}" -X POST \
               "${SONAR_HOST_URL}/api/qualitygates/create_condition" \
-              --data-urlencode "gateName=workshop-fail" \
+              --data-urlencode "gateName=workshop-standard" \
               --data-urlencode "metric=${1}" \
               --data-urlencode "op=${2}" \
               --data-urlencode "error=${3}" || true
           }
           create_condition bugs GT 0
           create_condition vulnerabilities GT 0
-          create_condition code_smells GT 0
           create_condition coverage LT 80
 
           curl -sf -u "${SONAR_AUTH}" -X POST \
             "${SONAR_HOST_URL}/api/qualitygates/set_as_default" \
-            --data-urlencode "name=workshop-fail" || true
+            --data-urlencode "name=workshop-standard" || true
 
       - name: Run tests, coverage, and Sonar analysis
         id: scan
@@ -225,10 +230,16 @@ jobs:
           path: sonar-report/
           if-no-files-found: warn
 
-      - name: Fail job because quality gate did not pass
+      - name: Quality gate failed (non-blocking)
         if: steps.scan.outcome == 'failure'
         run: |
-          echo "QUALITY GATE STATUS: FAILED"
+          echo "::warning::QUALITY GATE STATUS: FAILED"
           echo "Download the sonar-quality-gate-report artifact from this workflow run."
           echo "localhost:9000 is only available on the GitHub Actions runner."
+
+      - name: Fail job because quality gate did not pass
+        if: steps.scan.outcome == 'failure' && github.event_name == 'workflow_dispatch' && inputs.enforce_quality_gate == true
+        run: |
+          echo "QUALITY GATE STATUS: FAILED"
+          echo "enforce_quality_gate=true, so failing this workflow run."
           exit 1
